@@ -1,0 +1,24 @@
+{
+  "name": "workiom",
+  "description": "Claude plugins for the Workiom platform.",
+  "owner": {
+    "name": "Workiom",
+    "url": "https://workiom.com"
+  },
+  "metadata": {
+    "pluginRoot": "./plugins"
+  },
+  "plugins": [
+    {
+      "name": "workiom-vibe-apps",
+      "source": "workiom-vibe-apps",
+      "displayName": "Workiom Vibe Apps",
+      "description": "Build and publish Workiom vibe apps — self-contained pages that run inside a Workiom workspace and read and write its lists using the viewer's own session.",
+      "version": "1.0.0",
+      "category": "productivity",
+      "tags": ["workiom", "no-code", "internal-tools"],
+      "author": { "name": "Workiom", "url": "https://workiom.com" },
+      "homepage": "https://workiom.com"
+    }
+  ]
+}

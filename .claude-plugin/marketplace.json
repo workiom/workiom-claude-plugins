@@ -5,13 +5,10 @@
     "name": "Workiom",
     "url": "https://workiom.com"
   },
-  "metadata": {
-    "pluginRoot": "./plugins"
-  },
   "plugins": [
     {
       "name": "workiom-vibe-apps",
-      "source": "workiom-vibe-apps",
+      "source": "./plugins/workiom-vibe-apps",
       "displayName": "Workiom Vibe Apps",
       "description": "Build and publish Workiom vibe apps — self-contained pages that run inside a Workiom workspace and read and write its lists using the viewer's own session.",
       "version": "1.0.0",

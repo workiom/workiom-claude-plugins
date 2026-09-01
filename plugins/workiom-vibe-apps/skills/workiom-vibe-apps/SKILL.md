@@ -227,6 +227,13 @@ that make it actually work under the platform's constraints:
   inline script/style and same-origin connects only, plus
   `https://api.workiom.com`. No CDNs, no Google Fonts, no analytics, no remote
   images. System font stacks; inline SVG or emoji for icons; hand-rolled JS.
+- **`https://api.workiom.com` is allowed for `fetch`/XHR only, not `<img>`.**
+  The CSP grants it under `connect-src`; `img-src` stays at the `default-src
+  'none'` default. A direct `<img src="https://api.workiom.com/...">` is
+  silently blocked before it reaches the network (confirmed via DevTools —
+  zero bytes transferred, no error surfaced to JS). For file thumbnails and
+  downloads, fetch the bytes with `workiomHeaders()` and use a blob URL — see
+  "File attachments" below.
 - **Relative asset paths only.** `src="assets/x.jpg"` — never a leading `/`
   (resolves outside the app and 404s), never `/vibe/{appId}/…` (breaks on
   rename), never a `<base>` tag (CSP `base-uri 'none'` ignores it).
@@ -323,6 +330,9 @@ Base: `https://api.workiom.com` (the only permitted external origin). All calls 
 | Read comments | `GET /api/services/app/AdvancedComment/GetAll?listId={listId}&recordId={recordId}` |
 | Users (pickers only) | `GET /api/services/app/User/GetAll?isActive=true` |
 | Field schema | `GET /api/services/app/Fields/GetAll?listId={listId}&withSystemFields=true` |
+| Current user | `GET /api/services/app/Session/GetCurrentLoginInformations` → `result.user.id` (needed for File uploads, see below) |
+| Upload file | `POST /File/Upload` — **no** `/api/services/app` prefix, unlike every other row in this table; this is a plain controller, not the ABP dynamic proxy. Multipart body, field name `files` → `result[]`, each item `{fileName, fileType, fileToken, hasThumbnail, fileUrl, thumbnailUrl}`. This is **not** the write shape — see below. |
+| Download / thumbnail | `GET /File/DownloadFile?id={_id}&preview=false` / `GET /File/DownloadThumbnail?id={_id}&preview=false` — same no-prefix rule as Upload. **Use `_id`, not `FileToken`** — see below. |
 
 Reads reflect the viewing user's own permissions — a page cannot surface records they couldn't already see. Paginate `Data/All` by incrementing `skipCount`. Records carry `_id` (a string).
 
@@ -338,10 +348,118 @@ Reads reflect the viewing user's own permissions — a page cannot surface recor
 | MultiStaticSelect | array of labels | array of `{id, label}` |
 | User / People | email / array of emails | user object(s) |
 | Linked List | array of record `_id` strings | array of record objects |
+| File | array of transformed file objects (see below) | array of file objects — **different shape, see below** |
 
 To display a select read from a record use `value.label`; to write it back send `value.label`, never the object and never the option `id`. Omit optional fields left empty — no `null`, no `""`.
 
-**File attachments: do not generate upload code.** The flow requires a binary PUT to an S3 URL on another origin, and the page's CSP (`connect-src 'self' https://api.workiom.com`) blocks it. Tell the user attachments aren't supported in vibe apps yet and that files can be attached in the main Workiom UI — don't ship code that fails at runtime.
+**File attachments.** Upload with a plain multipart POST to `File/Upload`. Same origin, so no CSP issue — but note this endpoint (and the download/thumbnail endpoints below) do **not** carry the `/api/services/app` prefix every other call in this doc uses; they're a separate plain controller, not the ABP dynamic proxy. Calling `/api/services/app/File/Upload` 302-redirects to a 404 instead of failing cleanly, and is the most common way this silently breaks.
+
+```js
+async function uploadFile(file) {
+  const headers = workiomHeaders();
+  if (!headers) { redirectToLogin(); return null; }
+  delete headers["Content-Type"];          // let the browser set the multipart boundary
+
+  const body = new FormData();
+  body.append("files", file);
+
+  const res = await fetch("https://api.workiom.com/File/Upload", {   // NOT /api/services/app/File/Upload
+    method: "POST", headers, body
+  });
+  const json = await res.json().catch(() => null);
+  if (res.status === 401 || json?.unAuthorizedRequest) { redirectToLogin(); return null; }
+  if (!json?.success) throw new Error(json?.error?.message || "Upload failed");
+
+  return json.result[0];   // { fileName, fileType, fileToken, hasThumbnail, fileUrl, thumbnailUrl } — NOT the write shape, see below
+}
+```
+
+**The upload response is not the write shape.** `Data/Create`/`Data/UpdatePartial` need an explicit transform for a File field — confirmed via DevTools against the real frontend's own write payload. Four fields (`AnonymousForm`, `ExpiryDate`, `IsPermanent`, `UserId`) exist only in the write shape and are never present in the upload response:
+
+```js
+function toFileFieldValue(uploaded, originalFile, userId) {
+  return {
+    _id: uploaded.fileToken,
+    AnonymousForm: false,
+    ContentType: uploaded.fileType,
+    ExpiryDate: null,
+    FileName: uploaded.fileName,
+    FileToken: uploaded.fileToken,
+    FileUrl: uploaded.fileUrl,
+    HasThumbnail: !!uploaded.hasThumbnail,
+    IsPermanent: true,
+    Size: originalFile.size,   // not returned by the API — carry from the original browser File object
+    ThumbnailUrl: uploaded.thumbnailUrl,
+    UserId: userId              // see below — never comes from the upload response
+  };
+}
+```
+
+Fetch `userId` once per session (not per upload) via `GET /api/services/app/Session/GetCurrentLoginInformations` — this one *does* use the normal `/api/services/app` prefix — read `result.user.id`, and cache it. Send an array of `toFileFieldValue(...)` results as the File field's value in `Data/Create`/`Data/UpdatePartial`, the same way any other field value is sent. Do not build the presigned permit → PUT → confirm flow — it's a separate, cross-origin path meant for the main app, not vibe pages.
+
+**Reading a File field back is a different, PascalCase shape — do not reuse the write shape.** A record read from `Data/All` returns each attachment as:
+
+```json
+{
+  "_id": "...",
+  "FileToken": "...",
+  "FileName": "...",
+  "ContentType": "...",
+  "Size": 12345,
+  "HasThumbnail": true,
+  "IsImage": false,
+  "FileUrl": "...",
+  "ThumbnailUrl": "..."
+}
+```
+
+Always an array, even for one file. **Never point an `<img src>` or `<a href>` directly at `api.workiom.com`** — the CSP's `img-src` stays at the default `'none'` (only `connect-src` allows `api.workiom.com`, so a direct `<img>` is silently blocked before it hits the network, zero bytes transferred), and a plain link-click download can't be relied on to carry the session cookie across the navigation. `FileUrl`/`ThumbnailUrl` on the object above are always minted `inline` and are not download links either way.
+
+**Use `_id`, not `FileToken`, for every download/thumbnail call — this is the single most common way file read-back breaks.** `DownloadFile`, `DownloadThumbnail`, and `GeneratePublicDownloadUrl` all resolve the file server-side via a lookup keyed on the file's Mongo document id — despite parameter names like `id`/`fileToken` suggesting otherwise. `_id` and `FileToken` are **different values** once a file has gone through a record write (only `FileToken` survives from the original `Upload` response into the write payload; `_id` is assigned server-side when the record's File field value is persisted). Passing `FileToken` gets back a clean, misleading `"File not found!"` — not a network or auth error, so it's easy to mistake for something else being wrong.
+
+For a **thumbnail or inline preview**, fetch the bytes with the same `workiomHeaders()`-authenticated `fetch()` used for every other call and convert the response to a blob:
+
+```js
+async function fetchFileBlob(file, { thumbnail = false } = {}) {
+  const headers = workiomHeaders();
+  if (!headers) { redirectToLogin(); return null; }
+  delete headers["Content-Type"];
+
+  const id = file._id || file.FileToken;   // _id first — see above
+  const action = thumbnail ? "DownloadThumbnail" : "DownloadFile";
+  const res = await fetch(`https://api.workiom.com/File/${action}?id=${encodeURIComponent(id)}&preview=false`, { headers });   // no /api/services/app prefix
+  if (res.status === 401) { redirectToLogin(); return null; }
+  if (!res.ok) throw new Error(`${action} failed (${res.status})`);
+
+  return URL.createObjectURL(await res.blob());
+}
+```
+
+Use the resulting blob URL as `img.src` for a thumbnail, or as the `href` of a throwaway `<a download>` `.click()`ed programmatically.
+
+For a **real forced download** (a "Save As" prompt rather than inline display), `DownloadFile`'s disposition isn't controllable — use `GeneratePublicDownloadUrl?forceDownload=true` instead. Unlike `Upload`/`DownloadFile`, this one *does* carry the `/api/services/app` prefix, and its response is the normal `{success, result: {url, expiryDate}}` envelope, not a bare object. The URL it returns is a presigned link to a different origin (S3), so **don't `fetch()` it** — that hits the same `connect-src` wall as a direct `<img>`. Navigate to it instead — a plain `<a>` click, not `window.open()`. Because the S3 response carries `Content-Disposition: attachment`, the browser downloads the file without ever leaving the current page, so there's no tab to manage and no pop-up-blocker risk either:
+
+```js
+async function downloadFile(file, fileName) {
+  const id = file._id || file.FileToken;
+  const headers = workiomHeaders();
+  if (!headers) { redirectToLogin(); return; }
+
+  const res = await fetch(`https://api.workiom.com/api/services/app/File/GeneratePublicDownloadUrl/${encodeURIComponent(id)}?forceDownload=true`, { headers });
+  if (res.status === 401) { redirectToLogin(); return; }
+  const data = await res.json().catch(() => null);
+  if (!res.ok || data?.success === false) throw new Error(data?.error?.message || `HTTP ${res.status}`);
+  const url = data?.result?.url;
+  if (!url) throw new Error("Response had no result.url");
+
+  const a = document.createElement("a");
+  a.href = url;
+  a.rel = "noopener";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+```
 
 **Response envelope — HTTP 200 does not mean success:**
 

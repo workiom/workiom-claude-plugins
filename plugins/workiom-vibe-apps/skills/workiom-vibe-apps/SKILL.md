@@ -255,10 +255,12 @@ page JS. Use exactly:
 
 ```js
 function getCookie(name) {
-  const m = document.cookie.match(
-    new RegExp("(?:^|; )" + name.replace(/([.$?*|{}()[\]\\/+^])/g, "\\$1") + "=([^;]*)")
-  );
-  return m ? decodeURIComponent(m[1]) : null;
+  for (const part of document.cookie.split("; ")) {
+    const i = part.indexOf("=");
+    if (i > -1 && part.slice(0, i) === name)
+      return decodeURIComponent(part.slice(i + 1));
+  }
+  return null;
 }
 
 function workiomHeaders() {

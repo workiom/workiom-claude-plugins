@@ -1,6 +1,6 @@
 {
   "name": "workiom-vibe-apps",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Build and publish Workiom vibe apps \u2014 self-contained pages that run inside a Workiom workspace and read and write its lists using the viewer's own session.",
   "author": {
     "name": "Workiom"

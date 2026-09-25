@@ -181,7 +181,7 @@ Once answered, build the schema block Step 4 generates against:
   <tenant subdomain="..." />
   <app id="..." name="..." />
   <list id="<uuid>" name="...">
-    <field id="<int>" name="..." type="Text|LongText|Number|Date|DateTime|StaticSelect|MultiStaticSelect|Status|Email|Phone|URL|User|People|File" required="true|false">
+    <field id="<int>" name="..." type="Text|LongText|Number|Date|DateTime|StaticSelect|MultiStaticSelect|Status|Email|Phone|URL|User|People|File" required="true|false" default="verbatim label">
       <option>verbatim label</option>   <!-- StaticSelect/Status only -->
     </field>
   </list>
@@ -195,6 +195,14 @@ Once answered, build the schema block Step 4 generates against:
 rejects a record with an empty primary field too. Everything else is
 `required="false"`. Don't mark a field required because it "seems important",
 and don't relax one the list marks required.
+
+**`default` comes from discovery too.** For `StaticSelect`, `Status` and
+`MultiStaticSelect` fields, copy `get_list_info`'s `defaultValue`
+character-for-character. A single-select default is one option label (e.g.
+`"Medium"`). A multi-select default is a JSON array of labels (e.g.
+`'["Web","Mobile"]'`). Keep it only if every label matches one of the
+field's discovered options exactly; drop a default that names an option the
+list no longer has. Omit `default` when `defaultValue` is empty or missing.
 
 ---
 
@@ -402,7 +410,7 @@ resolved base.
 | Operation | Call |
 |---|---|
 | Read records | `POST /api/services/app/Data/All` body `{listId, maxResultCount, skipCount}` → `result.items[]`, `result.totalCount` |
-| Create | `POST /api/services/app/Data/Create?listId={listId}` body flat `{"<fieldId>": value}` → `result.id` |
+| Create | `POST /api/services/app/Data/Create?listId={listId}` body flat `{"<fieldId>": value}` → `result.id`. **Leave out every field the viewer left empty** — never send `""`, `null` or `[]` on create (see "Default values") |
 | Update | `PUT /api/services/app/Data/UpdatePartial?listId={listId}&id={recordId}` body only changed fields; `null` clears |
 | Delete one | `DELETE /api/services/app/Data/Delete?listId={listId}&id={recordId}` |
 | Comment | `POST /api/services/app/AdvancedComment/Comment?commentAsPlainText=true` body `{listId, recordId, comment}` |
@@ -623,6 +631,48 @@ not the `UpdatePartial` payload — that payload carries only changed fields,
 so untouched required fields would look missing. Don't leave the check to the server — its "is required" error comes
 back only after the viewer has already pressed submit.
 
+### Default values — pre-filled on create forms
+
+A Static List, Status or Multi Static List field with a `default` in
+`<app_schema>` starts with that value selected on every **create** form,
+exactly as it does in Workiom:
+
+```html
+<select id="f-3416131" name="3416131">
+  <option value="">Select…</option>
+  <option value="Critical">Critical</option>
+  <option value="High">High</option>
+  <option value="Medium" selected>Medium</option>
+  <option value="Low">Low</option>
+</select>
+```
+
+- **Single select or Status:** mark the default option `selected`. In a
+  segmented control or radio group, check it.
+- **Multi select:** check every label in the default array.
+- **Create forms only.** An edit form shows the record's stored value, even
+  when it's empty. Never overwrite it with the default.
+- **The viewer can still change or clear it.** A default is a starting
+  value, not a lock. The "Select…" option stays available, unless the field
+  is required.
+
+**Leave empty fields out of the create request.** The server fills in a
+field's default only when the field is missing from the request. If the app
+sends `""`, `null` or `[]` for a field the viewer left empty, the server
+skips the default and then drops the empty value, so the record is saved
+with nothing. Build the create payload from filled-in fields only:
+
+```js
+const payload = {};
+for (const [fieldId, value] of Object.entries(formValues)) {
+  if (!isEmptyValue(value)) payload[fieldId] = value;   // isEmptyValue: see "Required fields"
+}
+```
+
+This also keeps defaults working for fields that aren't on the form at all
+(e.g. a Status the app leaves to the server). Updates are different:
+`UpdatePartial` sends `null` on purpose to clear a field.
+
 ### Code quality
 
 - `textContent` for every user-supplied or API-returned string. **Never
@@ -748,8 +798,9 @@ unsafe page.
 **Then check required fields by hand — the script can't.** For every form,
 compare against `<app_schema>`. Every `required="true"` field on the form
 needs its red asterisk, `required`/`aria-required`, and an entry in the JS
-check. No `required="false"` field has an asterisk. Fix any mismatch before
-Step 6.
+check. No `required="false"` field has an asterisk. Every field with a
+`default` starts with that option selected on its create form, and the
+create request leaves out empty fields. Fix any mismatch before Step 6.
 
 ---
 
